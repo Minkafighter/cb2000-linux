@@ -8,6 +8,17 @@ A **100% clean-room, memory-safe Rust** Linux fingerprint driver for the **Canva
 > - **Tested setup**: This driver has **only been tested on CachyOS** by installing `fprintd` (`sudo pacman -S fprintd`) and then installing the standalone `cb2000-fprintd` service using [`packaging/install.sh`](packaging/install.sh) (**Option B** below).
 > - **Untested paths**: The native `libfprint` TOD plugin (`tod/`, **Option A** below) and other distributions (such as Ubuntu) have **not** been tested on real hardware.
 
+> [!TIP]
+> **Quick Start for New Users (No Rust / Compiling Required)**
+>
+> Want the fastest way to get fingerprint login working? Follow these 4 steps:
+> 1. **Install `fprintd`**: `sudo pacman -S fprintd` (CachyOS / Arch) or `sudo apt install fprintd libpam-fprintd` (Ubuntu / Debian).
+> 2. **Download & install the prebuilt binaries**: Grab the latest `cb2000-linux-v*-x86_64.tar.gz` from [GitHub Releases](https://github.com/Minkafighter/cb2000-linux/releases/latest), extract it, and run `sudo ./packaging/install.sh` inside the extracted folder.
+> 3. **Enable fingerprint login in PAM**: Add `auth sufficient pam_fprintd.so` near the top of your PAM files (`/etc/pam.d/system-local-login`, `/etc/pam.d/sudo`, `/etc/pam.d/polkit-1` on Arch/CachyOS — or run `sudo pam-auth-update` on Ubuntu).
+> 4. **Enroll your fingerprints**: Add them directly in **KDE Plasma** (*System Settings → Users*), **GNOME** (*Settings → Users*), or from a terminal with `fprintd-enroll`.
+>
+> See [**Option B**](#option-b-install-standalone-cb2000-fprintd-daemon-tested-on-cachyos--pure-rust-no-libfprint-tod-needed) and [**Enable PAM Authentication & Enroll**](#enable-pam-authentication--enroll-both-options) below for full details.
+
 Designed for **KDE Plasma**, **GNOME**, and **`pam_fprintd.so`** on Linux through **two integration modes** backed by the exact same Rust SDCP/USB core:
 
 1. **Native `libfprint` TOD Plugin (`libfprint-2-tod-1-cb2000.so`)** — Plugs directly into `libfprint-2-tod1` (Ubuntu) / `libfprint-tod` (Arch/CachyOS) and stock `fprintd.service`.
