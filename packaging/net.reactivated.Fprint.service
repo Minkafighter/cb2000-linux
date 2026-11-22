@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=net.reactivated.Fprint
+Exec=/usr/local/bin/cb2000-fprintd --state-dir /var/lib/cb2000-fprintd
+User=root
+SystemdService=cb2000-fprintd.service

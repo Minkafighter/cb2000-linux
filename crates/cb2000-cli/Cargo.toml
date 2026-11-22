@@ -1,0 +1,19 @@
+[package]
+name = "cb2000-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Diagnostic and standalone CLI for the CanvasBio CB2000 Linux fingerprint driver"
+
+[lints]
+workspace = true
+
+[dependencies]
+cb2000-proto = { path = "../cb2000-proto" }
+cb2000-sdcp = { path = "../cb2000-sdcp" }
+tokio.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+hex.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

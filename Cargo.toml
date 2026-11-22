@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/cb2000-sdcp",
+    "crates/cb2000-proto",
+    "crates/cb2000-cli",
+    "crates/cb2000-fprintd",
+    "crates/cb2000-tod",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+
+[workspace.dependencies]
+# Cryptography (pure Rust, audited RustCrypto)
+p256 = { version = "0.13", features = ["ecdh", "ecdsa", "pkcs8"] }
+hmac = "0.12"
+sha2 = "0.10"
+rand_core = { version = "0.6", features = ["getrandom"] }
+subtle = "2.6"
+zeroize = { version = "1.8", features = ["derive"] }
+x509-cert = "0.2"
+der = "0.7"
+spki = "0.7"
+
+# USB (pure Rust Linux usbfs)
+nusb = "0.1"
+
+# Async & D-Bus
+tokio = { version = "1", features = ["full"] }
+zbus = { version = "4", default-features = false, features = ["tokio"] }
+
+# Serialization & CLI & Errors & Logging
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+thiserror = "2"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures-lite = "2"

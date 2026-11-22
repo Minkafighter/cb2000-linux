@@ -1,0 +1,4 @@
+# CanvasBio CB2000 Match-on-Chip Fingerprint Sensor (Samsung Galaxy Book5 360)
+usb:v2DF0p0007*
+ ID_AUTOSUSPEND=1
+ ID_PERSIST=0

@@ -1,0 +1,34 @@
+[package]
+name = "cb2000-tod"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "C FFI staticlib bridge exposing the clean-room Rust CB2000 SDCP driver to libfprint-2-tod-1"
+
+[lib]
+name = "cb2000_tod"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+cb2000-proto = { path = "../cb2000-proto" }
+cb2000-sdcp = { path = "../cb2000-sdcp" }
+tokio = { version = "1", features = ["rt", "time"] }
+subtle.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+der.workspace = true
+p256.workspace = true
+rand_core.workspace = true
+sha2.workspace = true
+spki.workspace = true
+x509-cert.workspace = true
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/polkit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>CB2000 Linux Driver</vendor>
+  <action id="net.reactivated.fprint.device.verify">
+    <description>Verify a fingerprint</description>
+    <message>Authentication is required to verify a fingerprint.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
+  <action id="net.reactivated.fprint.device.enroll">
+    <description>Enroll or delete fingerprints</description>
+    <message>Authentication is required to enroll or delete fingerprints.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_self_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="net.reactivated.fprint.device.setusername">
+    <description>Manage fingerprints for other users</description>
+    <message>Administrator authentication is required to manage another user's fingerprints.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

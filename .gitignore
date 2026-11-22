@@ -1,0 +1,29 @@
+# Build artifacts
+/target/
+/tod/*.so
+/tod/build/
+*.a
+*.o
+**/*.rs.bk
+
+# Proprietary vendor files (NEVER commit vendor drivers or binaries)
+*.zip
+*.ZIP
+*.dll
+*.DLL
+*.inf
+*.INF
+*.cat
+*.CAT
+*.sys
+*.SYS
+*.bin
+*.BIN
+*.bat
+*.BAT
+
+# Editor / OS files
+.DS_Store
+.vscode/
+.idea/
+*.swp

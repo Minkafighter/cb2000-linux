@@ -1,0 +1,3 @@
+# CanvasBio CB2000 Match-on-Chip Fingerprint Sensor (Samsung Galaxy Book5 360)
+# Restricts raw USB access to root (cb2000-fprintd / fprintd) and disables aggressive USB autosuspend glitches during capture.
+SUBSYSTEM=="usb", ATTR{idVendor}=="2df0", ATTR{idProduct}=="0007", MODE="0600", ATTR{power/control}="on"

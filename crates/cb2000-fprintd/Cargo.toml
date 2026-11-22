@@ -1,0 +1,24 @@
+[package]
+name = "cb2000-fprintd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Security-hardened Rust net.reactivated.Fprint D-Bus daemon for CanvasBio CB2000 (KDE / GNOME / PAM)"
+
+[lints]
+workspace = true
+
+[dependencies]
+cb2000-proto = { path = "../cb2000-proto" }
+cb2000-sdcp = { path = "../cb2000-sdcp" }
+tokio.workspace = true
+zbus.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+futures-lite.workspace = true
