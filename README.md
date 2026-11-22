@@ -119,6 +119,18 @@ sudo ./tod/install-tod.sh
 
 ### 2. Install `cb2000-fprintd`
 
+#### Prebuilt Binaries (No Rust Required)
+
+Download the latest `cb2000-linux-v*-x86_64.tar.gz` (and optionally `SHA256SUMS.txt`) from [GitHub Releases](https://github.com/Minkafighter/cb2000-linux/releases/latest), then extract and run the installer:
+
+```bash
+tar -xzf cb2000-linux-v*-x86_64.tar.gz
+cd cb2000-linux-v*-x86_64
+sudo ./packaging/install.sh
+```
+
+#### Build from Source
+
 ```bash
 cargo build --release --workspace
 chmod +x packaging/install.sh

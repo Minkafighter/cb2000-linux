@@ -9,15 +9,22 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-if [[ ! -x "$REPO_ROOT/target/release/cb2000-fprintd" ]] || [[ ! -x "$REPO_ROOT/target/release/cb2000-cli" ]]; then
-  echo "Release binaries not found. Build first as your normal user:" >&2
-  echo "  cargo build --release" >&2
+if [[ -x "$REPO_ROOT/bin/cb2000-fprintd" ]] && [[ -x "$REPO_ROOT/bin/cb2000-cli" ]]; then
+  BIN_DIR="$REPO_ROOT/bin"
+elif [[ -x "$REPO_ROOT/target/release/cb2000-fprintd" ]] && [[ -x "$REPO_ROOT/target/release/cb2000-cli" ]]; then
+  BIN_DIR="$REPO_ROOT/target/release"
+else
+  echo "Release binaries (cb2000-fprintd, cb2000-cli) not found in:" >&2
+  echo "  $REPO_ROOT/bin" >&2
+  echo "  $REPO_ROOT/target/release" >&2
+  echo "Either extract a prebuilt release tarball or build from source as your normal user:" >&2
+  echo "  cargo build --release --workspace" >&2
   exit 1
 fi
 
-echo "[1/6] Installing binaries to /usr/local/bin..."
-install -Dm755 "$REPO_ROOT/target/release/cb2000-fprintd" /usr/local/bin/cb2000-fprintd
-install -Dm755 "$REPO_ROOT/target/release/cb2000-cli" /usr/local/bin/cb2000-cli
+echo "[1/6] Installing binaries from $BIN_DIR to /usr/local/bin..."
+install -Dm755 "$BIN_DIR/cb2000-fprintd" /usr/local/bin/cb2000-fprintd
+install -Dm755 "$BIN_DIR/cb2000-cli" /usr/local/bin/cb2000-cli
 
 echo "[2/6] Installing udev rule..."
 install -Dm644 "$SCRIPT_DIR/60-cb2000-fingerprint.rules" /etc/udev/rules.d/60-cb2000-fingerprint.rules
