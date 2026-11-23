@@ -1,3 +1,6 @@
+<p align="center">
+  <img src="assets/header.svg" alt="CB2000-Linux — Clean-Room Rust SDCP Fingerprint Driver" width="100%" />
+</p>
 # CB2000 Linux Fingerprint Driver (Clean-Room Rust + Native `libfprint` TOD)
 
 A **100% clean-room, memory-safe Rust** Linux fingerprint driver for the **CanvasBio CB2000 (`2df0:0007`)** Match-on-Chip (MoC) fingerprint sensor found in the **Samsung Galaxy Book5 360** (and compatible laptops).
