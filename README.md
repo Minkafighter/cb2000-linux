@@ -11,11 +11,11 @@ A **100% clean-room, memory-safe Rust** Linux fingerprint driver for the **Canva
 > [!TIP]
 > **Quick Start for New Users (No Rust / Compiling Required)**
 >
-> Want the fastest way to get fingerprint login working? Follow these 4 steps:
+> Want the fastest way to get fingerprint unlock working? Follow these steps:
 > 1. **Install `fprintd`**: `sudo pacman -S fprintd` (CachyOS / Arch) or `sudo apt install fprintd libpam-fprintd` (Ubuntu / Debian).
 > 2. **Download & install the prebuilt binaries**: Grab the latest `cb2000-linux-v*-x86_64.tar.gz` from [GitHub Releases](https://github.com/Minkafighter/cb2000-linux/releases/latest), extract it, and run `sudo ./packaging/install.sh` inside the extracted folder.
-> 3. **Enable fingerprint login in PAM**: Add `auth sufficient pam_fprintd.so` near the top of your PAM files (`/etc/pam.d/system-local-login`, `/etc/pam.d/sudo`, `/etc/pam.d/polkit-1` on Arch/CachyOS — or run `sudo pam-auth-update` on Ubuntu).
-> 4. **Enroll your fingerprints**: Add them directly in **KDE Plasma** (*System Settings → Users*), **GNOME** (*Settings → Users*), or from a terminal with `fprintd-enroll`.
+> 3. **Enroll your fingerprints**: Add them directly in **KDE Plasma** (*System Settings → Users*), **GNOME** (*Settings → Users*), or from a terminal with `fprintd-enroll`. On **KDE Plasma (Arch/CachyOS)**, lockscreen unlock works right away with **no PAM edits needed**.
+> 4. **Optional — Enable for `sudo` / Polkit**: Add `auth sufficient pam_fprintd.so` near the top of `/etc/pam.d/sudo` and `/etc/pam.d/polkit-1` on Arch/CachyOS (avoid editing `/etc/pam.d/system-auth`, which slows down SDDM boot login), or run `sudo pam-auth-update` on Ubuntu.
 >
 > See [**Option B**](#option-b-install-standalone-cb2000-fprintd-daemon-tested-on-cachyos--pure-rust-no-libfprint-tod-needed) and [**Enable PAM Authentication & Enroll**](#enable-pam-authentication--enroll-both-options) below for full details.
 
@@ -153,10 +153,12 @@ sudo ./packaging/install.sh
 ## Enable PAM Authentication & Enroll (Both Options)
 
 - **CachyOS / Arch Linux (KDE Plasma / GNOME / `sudo`)**:
-  Add `auth sufficient pam_fprintd.so` near the top of:
-  - `/etc/pam.d/system-local-login` (or `/etc/pam.d/sddm` / `/etc/pam.d/kde`)
-  - `/etc/pam.d/sudo`
-  - `/etc/pam.d/polkit-1`
+  - **KDE Plasma lockscreen**: Works out of the box once `fprintd` is installed and a fingerprint is enrolled (via `/etc/pam.d/kde-fingerprint`) — **no PAM edits required**. Initial boot login at SDDM stays password-only so login remains instant and KWallet unlocks cleanly.
+  - **Optional (`sudo` and Polkit)**: Add `auth sufficient pam_fprintd.so` near the top of:
+    - `/etc/pam.d/sudo`
+    - `/etc/pam.d/polkit-1`
+  - > [!NOTE]
+    > Avoid adding `pam_fprintd.so` to `/etc/pam.d/system-auth` — SDDM includes `system-auth` and will pause waiting for a fingerprint timeout after you enter your password on boot.
 
 - **Ubuntu (GNOME / KDE / `sudo`)**:
   ```bash
