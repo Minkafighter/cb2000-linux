@@ -13,6 +13,9 @@ crate-type = ["staticlib", "rlib"]
 cb2000-proto = { path = "../cb2000-proto" }
 cb2000-sdcp = { path = "../cb2000-sdcp" }
 tokio = { version = "1", features = ["rt", "time"] }
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
 subtle.workspace = true
 tracing.workspace = true
 

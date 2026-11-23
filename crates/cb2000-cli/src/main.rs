@@ -103,6 +103,7 @@ async fn main() -> Result<()> {
             println!("  Model Cert Subj  : {}", att.model_cert_subject);
             println!("  Model Cert Issr  : {}", att.model_cert_issuer);
             println!("  Model Cert SHA256: {}", hex::encode(att.model_cert_sha256));
+            println!("  Device Key SHA256: {}", hex::encode(att.device_pubkey_sha256));
             println!("  Firmware Hash    : {}", hex::encode(att.firmware_hash));
 
             print!("  Testing SDCP Reconnect challenge... ");

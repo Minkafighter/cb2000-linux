@@ -30,7 +30,7 @@ echo "[1/5] Building Rust staticlib (cb2000-tod) and libfprint TOD shared module
 if [[ -n "${SUDO_USER:-}" ]]; then
   USER_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
   USER_PATH="$USER_HOME/.cargo/bin:$PATH"
-  su -s /bin/bash "$SUDO_USER" -c "PATH='$USER_PATH' make -C '$SCRIPT_DIR'"
+  sudo -u "$SUDO_USER" env "PATH=$USER_PATH" make -C "$SCRIPT_DIR"
 else
   make -C "$SCRIPT_DIR"
 fi

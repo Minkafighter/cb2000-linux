@@ -4,10 +4,14 @@
 //! All `unsafe` code in this workspace is isolated to this FFI boundary crate.
 
 use std::ffi::c_void;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::slice;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -17,9 +21,183 @@ use cb2000_proto::types::{
 };
 use cb2000_proto::{derive_linux_host_uuid, Cb2000Device};
 use cb2000_sdcp::{AttestationPolicy, SDCP_DIGEST_LEN};
+use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use tokio::runtime::{Builder, Runtime};
-use tracing::error;
+use tracing::{error, info, warn};
+
+const DEFAULT_TOD_PIN_FILE: &str = "/var/lib/fprint/cb2000-sdcp-pin.json";
+const ENV_TOD_PIN_FILE: &str = "CB2000_TOD_PIN_FILE";
+const ENV_TOD_TRUSTED_CA_DIR: &str = "CB2000_TOD_TRUSTED_CA_DIR";
+
+#[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
+const O_NOFOLLOW: i32 = 0o100_000;
+#[cfg(not(any(target_arch = "aarch64", target_arch = "arm")))]
+const O_NOFOLLOW: i32 = 0o400_000;
+
+static PIN_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TodPinFile {
+    version: u32,
+    model_cert_sha256: String,
+    device_pubkey_sha256: String,
+}
+
+fn tod_pin_path() -> PathBuf {
+    std::env::var_os(ENV_TOD_PIN_FILE)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_TOD_PIN_FILE))
+}
+
+fn parse_hex_32(hex_str: &str) -> Option<[u8; 32]> {
+    let bytes = hex::decode(hex_str).ok()?;
+    bytes.try_into().ok()
+}
+
+fn load_tod_attestation_policy(pin_path: &Path) -> Result<(AttestationPolicy, bool), String> {
+    let mut policy = AttestationPolicy::default();
+
+    if let Some(ca_dir) = std::env::var_os(ENV_TOD_TRUSTED_CA_DIR).filter(|v| !v.is_empty()) {
+        let ca_path = PathBuf::from(ca_dir);
+        let ca_meta = fs::symlink_metadata(&ca_path)
+            .map_err(|e| format!("failed to stat {ENV_TOD_TRUSTED_CA_DIR}: {e}"))?;
+        if ca_meta.file_type().is_symlink() || !ca_meta.is_dir() {
+            return Err(format!(
+                "{ENV_TOD_TRUSTED_CA_DIR} must be a real directory (not a symlink)"
+            ));
+        }
+        let entries = fs::read_dir(&ca_path)
+            .map_err(|e| format!("failed to read {ENV_TOD_TRUSTED_CA_DIR}: {e}"))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("read_dir entry failed: {e}"))?;
+            let path = entry.path();
+            let meta = fs::symlink_metadata(&path)
+                .map_err(|e| format!("failed to stat CA cert {}: {e}", path.display()))?;
+            if meta.file_type().is_symlink() {
+                return Err(format!(
+                    "refusing symlink inside {ENV_TOD_TRUSTED_CA_DIR}: {}",
+                    path.display()
+                ));
+            }
+            if meta.is_file() {
+                let mut f = OpenOptions::new()
+                    .read(true)
+                    .custom_flags(O_NOFOLLOW)
+                    .open(&path)
+                    .map_err(|e| format!("failed to open CA cert {}: {e}", path.display()))?;
+                let mut der = Vec::new();
+                f.read_to_end(&mut der)
+                    .map_err(|e| format!("failed to read CA cert {}: {e}", path.display()))?;
+                policy.trusted_issuer_certs_der.push(der);
+            }
+        }
+        if policy.trusted_issuer_certs_der.is_empty() {
+            return Err(format!(
+                "{ENV_TOD_TRUSTED_CA_DIR} ({}) contains no certificate files",
+                ca_path.display()
+            ));
+        }
+    }
+
+    let my_uid = fs::metadata("/proc/self")
+        .map_err(|e| format!("failed to read /proc/self metadata: {e}"))?
+        .uid();
+
+    match fs::symlink_metadata(pin_path) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() {
+                return Err(format!("refusing symlink TOFU pin file: {}", pin_path.display()));
+            }
+            if !meta.is_file() {
+                return Err(format!("TOFU pin path is not a regular file: {}", pin_path.display()));
+            }
+            let mode = meta.permissions().mode() & 0o777;
+            if meta.uid() != my_uid || (mode & 0o077) != 0 {
+                return Err(format!(
+                    "insecure ownership or permissions on TOFU pin file: {}",
+                    pin_path.display()
+                ));
+            }
+            let mut f = OpenOptions::new()
+                .read(true)
+                .custom_flags(O_NOFOLLOW)
+                .open(pin_path)
+                .map_err(|e| format!("failed to open TOFU pin file: {e}"))?;
+            let mut raw = String::new();
+            f.read_to_string(&mut raw)
+                .map_err(|e| format!("failed to read TOFU pin file: {e}"))?;
+            let parsed: TodPinFile = serde_json::from_str(&raw)
+                .map_err(|e| format!("corrupted TOFU pin JSON: {e}"))?;
+            let cert_pin = parse_hex_32(&parsed.model_cert_sha256)
+                .ok_or_else(|| "corrupted model_cert_sha256 in TOFU pin file".to_string())?;
+            let pk_pin = parse_hex_32(&parsed.device_pubkey_sha256)
+                .ok_or_else(|| "corrupted device_pubkey_sha256 in TOFU pin file".to_string())?;
+            policy.pinned_model_cert_sha256.push(cert_pin);
+            policy.pinned_device_pubkey_sha256.push(pk_pin);
+            Ok((policy, true))
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok((policy, false)),
+        Err(e) => Err(format!("failed to stat TOFU pin file: {e}")),
+    }
+}
+
+fn save_tod_tofu_pin(
+    pin_path: &Path,
+    model_cert_sha256: [u8; 32],
+    device_pubkey_sha256: [u8; 32],
+) -> Result<(), String> {
+    let parent = pin_path
+        .parent()
+        .ok_or_else(|| "TOFU pin path has no parent directory".to_string())?;
+    let my_uid = fs::metadata("/proc/self")
+        .map_err(|e| format!("failed to read /proc/self metadata: {e}"))?
+        .uid();
+
+    let dir_meta = fs::symlink_metadata(parent)
+        .map_err(|e| format!("TOFU pin parent directory unavailable: {e}"))?;
+    if dir_meta.file_type().is_symlink() || !dir_meta.is_dir() {
+        return Err("TOFU pin parent path is not a safe directory".to_string());
+    }
+    let dir_mode = dir_meta.permissions().mode() & 0o777;
+    if dir_meta.uid() != my_uid || (dir_mode & 0o022) != 0 {
+        return Err("TOFU pin parent directory has insecure ownership or permissions".to_string());
+    }
+
+    let data = TodPinFile {
+        version: 1,
+        model_cert_sha256: hex::encode(model_cert_sha256),
+        device_pubkey_sha256: hex::encode(device_pubkey_sha256),
+    };
+    let payload = serde_json::to_vec_pretty(&data)
+        .map_err(|e| format!("failed to serialize TOFU pin: {e}"))?;
+
+    let seq = PIN_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = parent.join(format!(".cb2000-sdcp-pin.tmp.{}.{seq}", std::process::id()));
+    let mut f = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(O_NOFOLLOW)
+        .open(&tmp)
+        .map_err(|e| format!("failed to create TOFU pin temp file: {e}"))?;
+    if let Err(e) = f.write_all(&payload).and_then(|()| f.sync_all()) {
+        drop(f);
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("failed to write TOFU pin temp file: {e}"));
+    }
+    drop(f);
+
+    if let Err(e) = fs::rename(&tmp, pin_path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("failed to atomically persist TOFU pin: {e}"));
+    }
+    if let Ok(dir_fd) = File::open(parent) {
+        let _ = dir_fd.sync_all();
+    }
+    Ok(())
+}
 
 pub const CB2000_TOD_OK: i32 = 0;
 pub const CB2000_TOD_ERR_INVALID_ARG: i32 = -1;
@@ -265,7 +443,14 @@ pub unsafe extern "C" fn cb2000_tod_open(
             usb_ctx: SendPtr(usb_ctx),
         };
         let host_uuid = derive_linux_host_uuid();
-        let policy = AttestationPolicy::default();
+        let pin_path = tod_pin_path();
+        let (policy, already_pinned) = match load_tod_attestation_policy(&pin_path) {
+            Ok(p) => p,
+            Err(e) => {
+                error!(error = %e, pin_file = %pin_path.display(), "cb2000_tod_open attestation policy error");
+                return CB2000_TOD_ERR_SDCP;
+            }
+        };
 
         let dev = match rt.block_on(Cb2000Device::open(transport, &policy, host_uuid)) {
             Ok(dev) => dev,
@@ -274,6 +459,23 @@ pub unsafe extern "C" fn cb2000_tod_open(
                 return map_proto_error(&e);
             }
         };
+
+        if !already_pinned {
+            let att = dev.attestation();
+            match save_tod_tofu_pin(&pin_path, att.model_cert_sha256, att.device_pubkey_sha256) {
+                Ok(()) => info!(
+                    pin_file = %pin_path.display(),
+                    cert_sha256 = %hex::encode(att.model_cert_sha256),
+                    device_pubkey_sha256 = %hex::encode(att.device_pubkey_sha256),
+                    "Recorded TOFU SDCP attestation pins for libfprint TOD"
+                ),
+                Err(e) => warn!(
+                    error = %e,
+                    pin_file = %pin_path.display(),
+                    "Could not persist TOFU SDCP pin file"
+                ),
+            }
+        }
 
         let caps = dev.capabilities();
         let c_caps = Cb2000TodCaps {
@@ -781,6 +983,7 @@ mod tests {
     struct MockUsbState {
         model_sk: SigningKey,
         model_cert_der: Vec<u8>,
+        device_sk: SigningKey,
         pending_hdr: Option<[u8; 12]>,
         in_queue: VecDeque<Vec<u8>>,
         mac_key: [u8; 32],
@@ -868,6 +1071,7 @@ mod tests {
             Self {
                 model_sk,
                 model_cert_der,
+                device_sk: SigningKey::random(&mut rng),
                 pending_hdr: None,
                 in_queue: VecDeque::new(),
                 mac_key: [0u8; 32],
@@ -889,8 +1093,8 @@ mod tests {
                     let r_h = &req[2..34];
                     let pk_h = PublicKey::from_sec1_bytes(&req[36..101]).unwrap();
                     let mut rng = rand_core::OsRng;
-                    let dev_sk = SigningKey::random(&mut rng);
-                    let pk_d: [u8; 65] = dev_sk
+                    let pk_d: [u8; 65] = self
+                        .device_sk
                         .verifying_key()
                         .to_encoded_point(false)
                         .as_bytes()
@@ -908,7 +1112,7 @@ mod tests {
                     h.update(SDCP_FW_BINDING_PREFIX);
                     h.update(h_f);
                     h.update(pk_f);
-                    let s_d: Signature = dev_sk.sign_prehash(&h.finalize()).unwrap();
+                    let s_d: Signature = self.device_sk.sign_prehash(&h.finalize()).unwrap();
 
                     let mut claim = Vec::new();
                     claim.extend_from_slice(&self.model_cert_der);
@@ -1102,6 +1306,13 @@ mod tests {
 
     #[test]
     fn ffi_roundtrip_open_enroll_list_identify_delete_and_clear() {
+        let tmp_dir = std::env::temp_dir().join(format!("cb2000-tod-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp_dir);
+        fs::create_dir_all(&tmp_dir).unwrap();
+        fs::set_permissions(&tmp_dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let pin_file = tmp_dir.join("cb2000-sdcp-pin.json");
+        std::env::set_var(ENV_TOD_PIN_FILE, &pin_file);
+
         let mut mock = MockUsbState::new();
         let vtable = Cb2000UsbVtable {
             control_in: Some(mock_control_in),
@@ -1127,6 +1338,7 @@ mod tests {
             )
         };
         assert_eq!(rc, CB2000_TOD_OK);
+        assert!(pin_file.exists());
         assert!(!handle.is_null());
         assert_eq!(caps.protocol_version, 2);
         assert_eq!(caps.partition_id, 1);
@@ -1215,5 +1427,37 @@ mod tests {
         unsafe {
             cb2000_tod_close(handle);
         }
+
+        // Re-opening the same sensor must pass TOFU verification.
+        let mut handle2: *mut Cb2000TodHandle = ptr::null_mut();
+        let rc = unsafe {
+            cb2000_tod_open(
+                &vtable,
+                (&mut mock as *mut MockUsbState).cast(),
+                &mut handle2,
+                &mut caps,
+            )
+        };
+        assert_eq!(rc, CB2000_TOD_OK);
+        unsafe {
+            cb2000_tod_close(handle2);
+        }
+
+        // A rogue/swapped USB device MUST be rejected against the persisted TOFU pins.
+        let mut rogue = MockUsbState::new();
+        let mut rogue_handle: *mut Cb2000TodHandle = ptr::null_mut();
+        let rc = unsafe {
+            cb2000_tod_open(
+                &vtable,
+                (&mut rogue as *mut MockUsbState).cast(),
+                &mut rogue_handle,
+                &mut caps,
+            )
+        };
+        assert_eq!(rc, CB2000_TOD_ERR_SDCP);
+        assert!(rogue_handle.is_null());
+
+        std::env::remove_var(ENV_TOD_PIN_FILE);
+        let _ = fs::remove_dir_all(&tmp_dir);
     }
 }

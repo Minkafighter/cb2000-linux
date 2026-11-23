@@ -2,11 +2,14 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::process::Command;
 
 use zbus::fdo::DBusProxy;
 use zbus::names::UniqueName;
 use zbus::zvariant::Value;
 use zbus::{Connection, Proxy};
+
+use crate::store::validate_username;
 
 pub const ACTION_VERIFY: &str = "net.reactivated.fprint.device.verify";
 pub const ACTION_ENROLL: &str = "net.reactivated.fprint.device.enroll";
@@ -19,15 +22,43 @@ pub async fn caller_uid(conn: &Connection, sender: &UniqueName<'_>) -> zbus::fdo
     dbus.get_connection_unix_user(bus_name).await
 }
 
-/// Resolve a Unix UID to its login username by reading `/etc/passwd` (pure Rust, zero unsafe).
+/// Resolve a Unix UID to its login username by scanning `/etc/passwd` and falling back
+/// to `getent passwd <uid>` for NSS backends (e.g., `systemd-homed`, SSSD, LDAP).
 pub fn uid_to_username(uid: u32) -> Option<String> {
-    let passwd = fs::read_to_string("/etc/passwd").ok()?;
-    for line in passwd.lines() {
-        let mut parts = line.split(':');
-        let name = parts.next()?;
-        let _pw = parts.next()?;
-        let uid_str = parts.next()?;
-        if uid_str.parse::<u32>().ok() == Some(uid) {
+    if let Ok(passwd) = fs::read_to_string("/etc/passwd") {
+        if let Some(name) = parse_passwd_uid(&passwd, uid) {
+            return Some(name);
+        }
+    }
+
+    let output = Command::new("getent")
+        .args(["passwd", &uid.to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    parse_passwd_uid(&stdout, uid)
+}
+
+fn parse_passwd_uid(content: &str, uid: u32) -> Option<String> {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let mut parts = trimmed.split(':');
+        let Some(name) = parts.next() else {
+            continue;
+        };
+        let Some(_pw) = parts.next() else {
+            continue;
+        };
+        let Some(uid_str) = parts.next() else {
+            continue;
+        };
+        if uid_str.parse::<u32>().ok() == Some(uid) && validate_username(name).is_ok() {
             return Some(name.to_string());
         }
     }
@@ -50,6 +81,10 @@ pub async fn resolve_and_authorize_username(
     if requested_username.is_empty() {
         return Ok(caller_name);
     }
+
+    validate_username(requested_username).map_err(|_| {
+        zbus::fdo::Error::InvalidArgs(format!("invalid username: {requested_username}"))
+    })?;
 
     if uid != 0 && requested_username != caller_name {
         check_polkit(conn, sender, ACTION_SET_USERNAME, true).await?;

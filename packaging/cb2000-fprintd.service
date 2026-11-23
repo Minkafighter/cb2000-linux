@@ -40,7 +40,7 @@ UMask=0077
 
 # Restrict device access strictly to USB character devices (/dev/bus/usb/*)
 DevicePolicy=closed
-DeviceAllow=char-usb_device rwm
+DeviceAllow=char-usb_device rw
 
 [Install]
 WantedBy=multi-user.target

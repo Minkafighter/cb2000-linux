@@ -16,10 +16,17 @@ use p256::elliptic_curve::sec1::ToEncodedPoint;
 use p256::{EncodedPoint, PublicKey};
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
+use spki::ObjectIdentifier;
 use subtle::ConstantTimeEq;
 use thiserror::Error;
+use x509_cert::ext::pkix::BasicConstraints;
 use x509_cert::Certificate;
 use zeroize::{Zeroize, ZeroizeOnDrop};
+
+const OID_EC_PUBLIC_KEY: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.2.1");
+const OID_SECP256R1: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.3.1.7");
+const OID_ECDSA_WITH_SHA256: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.2");
+const OID_BASIC_CONSTRAINTS: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.19");
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -76,12 +83,15 @@ pub enum SdcpError {
     CryptoInternal,
 }
 
-/// Attestation verification policy for the sensor's X.509 Model Certificate.
+/// Attestation verification policy for the sensor's X.509 Model Certificate and device key.
 #[derive(Debug, Clone, Default)]
 pub struct AttestationPolicy {
     /// If non-empty, the SHA-256 fingerprint of the DER-encoded Model Certificate must match
     /// one of the entries in this allowlist (Trust-On-First-Use or explicit pinning).
     pub pinned_model_cert_sha256: Vec<[u8; 32]>,
+    /// If non-empty, the SHA-256 fingerprint of the sensor's per-device public key (`pk_d`)
+    /// must match one of the entries in this allowlist (binds to a specific physical sensor).
+    pub pinned_device_pubkey_sha256: Vec<[u8; 32]>,
     /// If non-empty, the Model Certificate's DER signature must verify against one of these
     /// trusted issuing CA certificates (e.g., Windows Hello Secure Devices CA).
     pub trusted_issuer_certs_der: Vec<Vec<u8>>,
@@ -187,6 +197,7 @@ pub struct DeviceAttestation {
     pub model_cert_sha256: [u8; SDCP_DIGEST_LEN],
     pub firmware_hash: [u8; SDCP_DIGEST_LEN],
     pub device_pubkey_uncompressed: [u8; P256_UNCOMPRESSED_LEN],
+    pub device_pubkey_sha256: [u8; SDCP_DIGEST_LEN],
 }
 
 /// Ephemeral client state for initiating an SDCP Connect handshake.
@@ -254,8 +265,9 @@ impl SdcpClientHandshake {
             .map_err(|e| SdcpError::InvalidCertificate(e.to_string()))?;
 
         let cert_sha256: [u8; 32] = Sha256::digest(parsed.model_cert_der).into();
+        let pk_d_sha256: [u8; 32] = Sha256::digest(parsed.pk_d).into();
 
-        // Enforce optional certificate SHA-256 pin list.
+        // Enforce optional Model Certificate SHA-256 pin list.
         if !policy.pinned_model_cert_sha256.is_empty()
             && !policy
                 .pinned_model_cert_sha256
@@ -268,6 +280,19 @@ impl SdcpClientHandshake {
             )));
         }
 
+        // Enforce optional per-device public key (pk_d) SHA-256 pin list.
+        if !policy.pinned_device_pubkey_sha256.is_empty()
+            && !policy
+                .pinned_device_pubkey_sha256
+                .iter()
+                .any(|pin| bool::from(pin.ct_eq(&pk_d_sha256)))
+        {
+            return Err(SdcpError::AttestationPolicyRejected(format!(
+                "device pubkey sha256 {} not in pinned allowlist",
+                hex::encode(pk_d_sha256)
+            )));
+        }
+
         // Enforce optional issuing CA signature verification.
         if !policy.trusted_issuer_certs_der.is_empty() {
             verify_cert_against_issuers(&model_cert, &policy.trusted_issuer_certs_der)?;
@@ -276,11 +301,10 @@ impl SdcpClientHandshake {
         let model_vk = extract_p256_verifying_key_from_cert(&model_cert)?;
 
         // 2. Verify s_m = ECDSA_Sign(sk_m, SHA-256(pk_d)).
-        let pk_d_hash = Sha256::digest(parsed.pk_d);
         let sig_m = Signature::from_slice(parsed.s_m)
             .map_err(|_| SdcpError::InvalidSignature("s_m invalid raw signature"))?;
         model_vk
-            .verify_prehash(&pk_d_hash, &sig_m)
+            .verify_prehash(&pk_d_sha256, &sig_m)
             .map_err(|_| SdcpError::ModelSignatureInvalid)?;
 
         // 3. Verify s_d = ECDSA_Sign(sk_d, SHA-256([0xC0, 0x01] || h_f || pk_f)).
@@ -342,9 +366,11 @@ impl SdcpClientHandshake {
 
         // 5. Verify Connect MAC: HMAC-SHA256(m_k, "connect\0" || SHA-256(claim)).
         let claim_hash: [u8; SDCP_DIGEST_LEN] = Sha256::digest(&response.claim).into();
-        let expected_mac = sdcp_mac(&mac_key, b"connect", &[&claim_hash])?;
+        let mut expected_mac = sdcp_mac(&mac_key, b"connect", &[&claim_hash])?;
+        let mac_ok = bool::from(expected_mac.ct_eq(&response.mac));
+        expected_mac.zeroize();
 
-        if !bool::from(expected_mac.ct_eq(&response.mac)) {
+        if !mac_ok {
             master_secret.zeroize();
             mac_key.zeroize();
             sym_key.zeroize();
@@ -357,6 +383,7 @@ impl SdcpClientHandshake {
             model_cert_sha256: cert_sha256,
             firmware_hash: *parsed.h_f,
             device_pubkey_uncompressed: *parsed.pk_d,
+            device_pubkey_sha256: pk_d_sha256,
         };
 
         let session = SdcpSession {
@@ -403,8 +430,10 @@ impl SdcpSession {
         host_random: &[u8; SDCP_DIGEST_LEN],
         device_mac: &[u8; SDCP_DIGEST_LEN],
     ) -> Result<(), SdcpError> {
-        let expected = sdcp_mac(&self.mac_key, b"reconnect", &[host_random])?;
-        if bool::from(expected.ct_eq(device_mac)) {
+        let mut expected = sdcp_mac(&self.mac_key, b"reconnect", &[host_random])?;
+        let ok = bool::from(expected.ct_eq(device_mac));
+        expected.zeroize();
+        if ok {
             Ok(())
         } else {
             Err(SdcpError::ReconnectMacMismatch)
@@ -428,12 +457,14 @@ impl SdcpSession {
         matched_enrollment_id: &[u8; SDCP_DIGEST_LEN],
         device_mac: &[u8; SDCP_DIGEST_LEN],
     ) -> Result<(), SdcpError> {
-        let expected = sdcp_mac(
+        let mut expected = sdcp_mac(
             &self.mac_key,
             b"identify",
             &[host_identify_nonce, matched_enrollment_id],
         )?;
-        if bool::from(expected.ct_eq(device_mac)) {
+        let ok = bool::from(expected.ct_eq(device_mac));
+        expected.zeroize();
+        if ok {
             Ok(())
         } else {
             Err(SdcpError::IdentifyMacMismatch)
@@ -498,16 +529,17 @@ pub fn sdcp_mac(
 }
 
 fn read_u16_prefixed<'a>(buf: &'a [u8], cursor: &mut usize) -> Option<&'a [u8]> {
-    if *cursor + 2 > buf.len() {
+    let header_end = cursor.checked_add(2)?;
+    if header_end > buf.len() {
         return None;
     }
     let len = u16::from_le_bytes([buf[*cursor], buf[*cursor + 1]]) as usize;
-    *cursor += 2;
-    if *cursor + len > buf.len() {
+    let body_end = header_end.checked_add(len)?;
+    if body_end > buf.len() {
         return None;
     }
-    let slice = &buf[*cursor..*cursor + len];
-    *cursor += len;
+    let slice = &buf[header_end..body_end];
+    *cursor = body_end;
     Some(slice)
 }
 
@@ -537,21 +569,59 @@ fn der_tlv_total_len(buf: &[u8]) -> Option<usize> {
 }
 
 fn extract_p256_verifying_key_from_cert(cert: &Certificate) -> Result<VerifyingKey, SdcpError> {
-    let key_bytes = cert
-        .tbs_certificate
-        .subject_public_key_info
-        .subject_public_key
-        .raw_bytes();
+    let spki = &cert.tbs_certificate.subject_public_key_info;
+    if spki.algorithm.oid != OID_EC_PUBLIC_KEY {
+        return Err(SdcpError::InvalidCertificate(format!(
+            "unsupported SPKI algorithm OID {} (expected id-ecPublicKey)",
+            spki.algorithm.oid
+        )));
+    }
+    let curve_oid: ObjectIdentifier = spki
+        .algorithm
+        .parameters
+        .as_ref()
+        .ok_or_else(|| SdcpError::InvalidCertificate("missing EC curve parameters OID".into()))?
+        .decode_as()
+        .map_err(|_| SdcpError::InvalidCertificate("invalid EC curve parameters OID".into()))?;
+    if curve_oid != OID_SECP256R1 {
+        return Err(SdcpError::InvalidCertificate(format!(
+            "unsupported EC curve OID {curve_oid} (expected secp256r1)"
+        )));
+    }
+
+    let key_bytes = spki.subject_public_key.raw_bytes();
     let point = EncodedPoint::from_bytes(key_bytes)
         .map_err(|_| SdcpError::InvalidCertificate("model cert SPKI is not SEC1 P-256".into()))?;
     VerifyingKey::from_encoded_point(&point)
         .map_err(|_| SdcpError::InvalidCertificate("model cert SPKI is not on P-256 curve".into()))
 }
 
+fn cert_is_ca(cert: &Certificate) -> bool {
+    let Some(exts) = cert.tbs_certificate.extensions.as_ref() else {
+        return false;
+    };
+    exts.iter().any(|ext| {
+        ext.extn_id == OID_BASIC_CONSTRAINTS
+            && BasicConstraints::from_der(ext.extn_value.as_bytes()).is_ok_and(|bc| bc.ca)
+    })
+}
+
 fn verify_cert_against_issuers(
     leaf: &Certificate,
     issuers_der: &[Vec<u8>],
 ) -> Result<(), SdcpError> {
+    if leaf.signature_algorithm != leaf.tbs_certificate.signature {
+        return Err(SdcpError::InvalidCertificate(
+            "leaf cert outer signatureAlgorithm does not match tbsCertificate.signature".into(),
+        ));
+    }
+    if leaf.signature_algorithm.oid != OID_ECDSA_WITH_SHA256 {
+        return Err(SdcpError::InvalidCertificate(format!(
+            "unsupported leaf cert signature OID {} (only ecdsa-with-SHA256 is supported)",
+            leaf.signature_algorithm.oid
+        )));
+    }
+
     let tbs_der = leaf
         .tbs_certificate
         .to_der()
@@ -565,6 +635,12 @@ fn verify_cert_against_issuers(
         let Ok(issuer) = Certificate::from_der(issuer_der) else {
             continue;
         };
+        if issuer.tbs_certificate.subject != leaf.tbs_certificate.issuer {
+            continue;
+        }
+        if !cert_is_ca(&issuer) {
+            continue;
+        }
         let Ok(issuer_vk) = extract_p256_verifying_key_from_cert(&issuer) else {
             continue;
         };
@@ -584,9 +660,10 @@ mod tests {
     use p256::ecdsa::{signature::hazmat::PrehashSigner, SigningKey};
 
     /// Build a minimal valid self-signed DER X.509 v3 certificate containing `model_vk` for tests.
-    fn build_test_x509_der(model_sk: &SigningKey) -> Vec<u8> {
-        use der::asn1::BitString;
+    fn build_test_x509_der(model_sk: &SigningKey, is_ca: bool) -> Vec<u8> {
+        use der::asn1::{BitString, OctetString};
         use spki::{AlgorithmIdentifierOwned, ObjectIdentifier, SubjectPublicKeyInfoOwned};
+        use x509_cert::ext::Extension;
         use x509_cert::name::Name;
         use x509_cert::serial_number::SerialNumber;
         use x509_cert::time::{Time, Validity};
@@ -623,6 +700,21 @@ mod tests {
             ),
         };
 
+        let extensions = if is_ca {
+            let bc = BasicConstraints {
+                ca: true,
+                path_len_constraint: None,
+            };
+            let bc_der = bc.to_der().unwrap();
+            Some(vec![Extension {
+                extn_id: OID_BASIC_CONSTRAINTS,
+                critical: true,
+                extn_value: OctetString::new(bc_der).unwrap(),
+            }])
+        } else {
+            None
+        };
+
         let tbs = TbsCertificate {
             version: x509_cert::Version::V3,
             serial_number: SerialNumber::new(&[1u8]).unwrap(),
@@ -633,7 +725,7 @@ mod tests {
             subject_public_key_info: spki,
             issuer_unique_id: None,
             subject_unique_id: None,
-            extensions: None,
+            extensions,
         };
 
         let tbs_der = tbs.to_der().unwrap();
@@ -723,7 +815,7 @@ mod tests {
     #[test]
     fn full_sdcp_handshake_enroll_identify_reconnect_roundtrip() {
         let model_sk = SigningKey::random(&mut OsRng);
-        let model_cert_der = build_test_x509_der(&model_sk);
+        let model_cert_der = build_test_x509_der(&model_sk, true);
 
         let hs = SdcpClientHandshake::new().unwrap();
         let req = hs.to_wire_request();
@@ -732,6 +824,7 @@ mod tests {
 
         let policy = AttestationPolicy {
             pinned_model_cert_sha256: vec![Sha256::digest(&model_cert_der).into()],
+            pinned_device_pubkey_sha256: Vec::new(),
             trusted_issuer_certs_der: vec![model_cert_der.clone()],
         };
         let (session, att) = hs.complete(&resp, &policy).unwrap();
@@ -775,7 +868,7 @@ mod tests {
     #[test]
     fn rejects_tampered_claim_signature() {
         let model_sk = SigningKey::random(&mut OsRng);
-        let model_cert_der = build_test_x509_der(&model_sk);
+        let model_cert_der = build_test_x509_der(&model_sk, false);
 
         let hs = SdcpClientHandshake::new().unwrap();
         let req = hs.to_wire_request();
@@ -790,6 +883,46 @@ mod tests {
         assert!(matches!(
             hs.complete(&resp, &AttestationPolicy::default()),
             Err(SdcpError::DeviceSignatureInvalid)
+        ));
+    }
+
+    #[test]
+    fn rejects_swapped_device_pubkey_and_non_ca_issuer() {
+        let model_sk = SigningKey::random(&mut OsRng);
+        let leaf_cert_der = build_test_x509_der(&model_sk, false);
+
+        // First sensor succeeds and yields a concrete pk_d hash.
+        let hs1 = SdcpClientHandshake::new().unwrap();
+        let (resp1_wire, _) = simulate_device_connect(&hs1.to_wire_request(), &model_sk, &leaf_cert_der);
+        let resp1 = ConnectResponse::from_wire(&resp1_wire).unwrap();
+        let (_, att1) = hs1.complete(&resp1, &AttestationPolicy::default()).unwrap();
+
+        // Second physical sensor of the SAME model has a different pk_d -> MUST be rejected.
+        let hs2 = SdcpClientHandshake::new().unwrap();
+        let (resp2_wire, _) = simulate_device_connect(&hs2.to_wire_request(), &model_sk, &leaf_cert_der);
+        let resp2 = ConnectResponse::from_wire(&resp2_wire).unwrap();
+        let strict_policy = AttestationPolicy {
+            pinned_model_cert_sha256: vec![att1.model_cert_sha256],
+            pinned_device_pubkey_sha256: vec![att1.device_pubkey_sha256],
+            trusted_issuer_certs_der: Vec::new(),
+        };
+        assert!(matches!(
+            hs2.complete(&resp2, &strict_policy),
+            Err(SdcpError::AttestationPolicyRejected(_))
+        ));
+
+        // A non-CA cert (missing BasicConstraints ca=true) MUST NOT be accepted as a trusted issuer.
+        let hs3 = SdcpClientHandshake::new().unwrap();
+        let (resp3_wire, _) = simulate_device_connect(&hs3.to_wire_request(), &model_sk, &leaf_cert_der);
+        let resp3 = ConnectResponse::from_wire(&resp3_wire).unwrap();
+        let ca_policy = AttestationPolicy {
+            pinned_model_cert_sha256: Vec::new(),
+            pinned_device_pubkey_sha256: Vec::new(),
+            trusted_issuer_certs_der: vec![leaf_cert_der],
+        };
+        assert!(matches!(
+            hs3.complete(&resp3, &ca_policy),
+            Err(SdcpError::AttestationPolicyRejected(_))
         ));
     }
 }

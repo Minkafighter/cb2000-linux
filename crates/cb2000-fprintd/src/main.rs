@@ -119,19 +119,45 @@ async fn monitor_name_owner_changes(conn: Connection, state: Arc<DaemonState>) -
 }
 
 fn load_trusted_cas(dir: Option<&std::path::Path>) -> Result<Vec<Vec<u8>>> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+
     let Some(dir) = dir else {
         return Ok(Vec::new());
     };
-    if !dir.exists() {
-        warn!(dir = %dir.display(), "Trusted CA directory does not exist; skipping");
-        return Ok(Vec::new());
+    let dir_meta = std::fs::symlink_metadata(dir)
+        .with_context(|| format!("Trusted CA directory {} is unavailable", dir.display()))?;
+    if dir_meta.file_type().is_symlink() || !dir_meta.is_dir() {
+        anyhow::bail!(
+            "Trusted CA path {} must be a real directory (not a symlink)",
+            dir.display()
+        );
     }
+
     let mut certs = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
+    for entry in std::fs::read_dir(dir)
+        .with_context(|| format!("Failed to read trusted CA directory {}", dir.display()))?
+    {
         let path = entry?.path();
-        if path.is_file() {
-            certs.push(std::fs::read(&path)?);
+        let meta = std::fs::symlink_metadata(&path)?;
+        if meta.file_type().is_symlink() {
+            anyhow::bail!("Refusing symlink inside trusted CA directory: {}", path.display());
         }
+        if meta.is_file() {
+            let mut f = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(crate::store::O_NOFOLLOW)
+                .open(&path)?;
+            let mut buf = Vec::new();
+            f.read_to_end(&mut buf)?;
+            certs.push(buf);
+        }
+    }
+    if certs.is_empty() {
+        anyhow::bail!(
+            "Trusted CA directory {} contains no certificate files",
+            dir.display()
+        );
     }
     info!(count = certs.len(), dir = %dir.display(), "Loaded trusted issuing CA certificates");
     Ok(certs)

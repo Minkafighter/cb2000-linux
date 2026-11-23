@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
-use crate::transport::UsbTransport;
+use crate::transport::{TransportError, UsbTransport};
 use crate::types::{
     CaptureEvent, CapturePurpose, CmdDirection, DeviceCapabilities, DuplicateInfo,
     EnrollSampleOutcome, IdentifyOutcome, Opcode, ProtoError, ProtocolVersion, SlotRecord,
@@ -54,7 +54,10 @@ pub fn derive_linux_host_uuid() -> [u8; 16] {
     let source = std::fs::read_to_string("/etc/machine-id")
         .or_else(|_| std::fs::read_to_string("/var/lib/dbus/machine-id"))
         .or_else(|_| std::fs::read_to_string("/sys/class/dmi/id/product_uuid"))
-        .unwrap_or_else(|_| "cb2000-linux-fallback-host".to_string());
+        .unwrap_or_else(|_| {
+            warn!("Could not read machine-id or DMI product_uuid; using static fallback host UUID");
+            "cb2000-linux-fallback-host".to_string()
+        });
 
     let mut hasher = Sha256::new();
     hasher.update(b"cb2000-linux-partition-v1\0");
@@ -504,7 +507,9 @@ impl<T: UsbTransport> Cb2000Device<T> {
         }
 
         let slots = self.enumerate_slots().await?;
-        let slot = &slots[usize::from(slot_index)];
+        let slot = slots
+            .get(usize::from(slot_index))
+            .ok_or(ProtoError::InvalidSlot(slot_index))?;
         if slot.valid && !self.is_owned_slot(slot) {
             return Err(ProtoError::ForeignPartitionSlot { slot: slot_index });
         }
@@ -707,9 +712,16 @@ impl<T: UsbTransport> Cb2000Device<T> {
         len: u16,
         allow_nonzero_status: bool,
     ) -> Result<Vec<u8>, ProtoError> {
+        let expected_len = usize::from(len);
         let hdr = build_cmd_header(CmdDirection::DataIn, opcode, p0, p1, 0, len);
         transport.bulk_out(&hdr).await?;
-        let data = transport.bulk_in(usize::from(len)).await?;
+        let data = transport.bulk_in(expected_len).await?;
+        if data.len() != expected_len {
+            return Err(ProtoError::Transport(TransportError::ShortTransfer {
+                expected: expected_len,
+                actual: data.len(),
+            }));
+        }
         Self::read_and_check_status(transport, opcode, allow_nonzero_status).await?;
         Ok(data)
     }
@@ -720,6 +732,12 @@ impl<T: UsbTransport> Cb2000Device<T> {
         allow_nonzero_status: bool,
     ) -> Result<(), ProtoError> {
         let trailer = transport.bulk_in(CMD_STATUS_TRAILER_LEN).await?;
+        if trailer.len() != CMD_STATUS_TRAILER_LEN {
+            return Err(ProtoError::Transport(TransportError::ShortTransfer {
+                expected: CMD_STATUS_TRAILER_LEN,
+                actual: trailer.len(),
+            }));
+        }
         let status = trailer[0];
         let detail = u32::from_le_bytes([trailer[1], trailer[2], trailer[3], trailer[4]]);
         if status != 0 {
@@ -745,7 +763,7 @@ impl<T: UsbTransport> Cb2000Device<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::{BoxFuture, TransportError};
+    use crate::transport::BoxFuture;
     use cb2000_sdcp::{kbkdf_counter_hmac_sha256, sdcp_mac};
     use p256::ecdh::EphemeralSecret;
     use p256::ecdsa::{signature::hazmat::PrehashSigner, Signature, SigningKey};

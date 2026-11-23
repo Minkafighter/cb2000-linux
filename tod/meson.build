@@ -1,5 +1,5 @@
 project('cb2000-libfprint-tod', 'c',
-  version: '0.1.0',
+  version: '0.1.1',
   license: 'MIT',
   default_options: [
     'warning_level=2',
@@ -26,10 +26,10 @@ rust_staticlib = custom_target('cb2000-tod-staticlib',
   output: 'libcb2000_tod.a',
   command: [
     'sh', '-c',
-    'cargo build --release --manifest-path "@0@/Cargo.toml" -p cb2000-tod && cp "@0@/target/release/libcb2000_tod.a" "@1@"'.format(
-      meson.current_source_dir() / '..',
-      '@OUTPUT@',
-    ),
+    'cargo build --release --manifest-path "$1/Cargo.toml" -p cb2000-tod && cp "$1/target/release/libcb2000_tod.a" "$2"',
+    '_',
+    meson.current_source_dir() / '..',
+    '@OUTPUT@',
   ],
   build_by_default: true,
 )

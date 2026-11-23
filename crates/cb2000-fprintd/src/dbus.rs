@@ -135,6 +135,7 @@ impl DaemonState {
 
         let mut policy = AttestationPolicy {
             pinned_model_cert_sha256: Vec::new(),
+            pinned_device_pubkey_sha256: Vec::new(),
             trusted_issuer_certs_der: self.trusted_ca_der.clone(),
         };
 
@@ -142,6 +143,9 @@ impl DaemonState {
             let store = self.store.lock().await;
             if let Some(pin) = store.pinned_model_cert_sha256() {
                 policy.pinned_model_cert_sha256.push(pin);
+            }
+            if let Some(pk_pin) = store.pinned_device_pubkey_sha256() {
+                policy.pinned_device_pubkey_sha256.push(pk_pin);
             }
         }
 
@@ -153,15 +157,22 @@ impl DaemonState {
         let new_stages = dev.capabilities().enroll_stages;
         let prev_stages = self.enroll_stages.swap(new_stages, Ordering::SeqCst);
 
-        // Record TOFU pin on first successful verified SDCP handshake.
+        // Record TOFU pins (Model Cert SHA-256 + per-device pk_d SHA-256) on first verified handshake.
         if self.tofu_pinning {
             let mut store = self.store.lock().await;
-            if store.pinned_model_cert_sha256().is_none() {
-                let sha = dev.attestation().model_cert_sha256;
-                if let Err(e) = store.set_pinned_model_cert_sha256(sha) {
-                    warn!(error = %e, "Failed to persist TOFU Model Cert SHA-256 pin");
+            if store.pinned_model_cert_sha256().is_none()
+                || store.pinned_device_pubkey_sha256().is_none()
+            {
+                let cert_sha = dev.attestation().model_cert_sha256;
+                let pk_sha = dev.attestation().device_pubkey_sha256;
+                if let Err(e) = store.set_tofu_pins(cert_sha, pk_sha) {
+                    warn!(error = %e, "Failed to persist TOFU sensor attestation pins");
                 } else {
-                    info!(cert_sha256 = %hex::encode(sha), "Recorded TOFU pin for sensor Model Certificate");
+                    info!(
+                        cert_sha256 = %hex::encode(cert_sha),
+                        device_pubkey_sha256 = %hex::encode(pk_sha),
+                        "Recorded TOFU attestation pins for sensor Model Cert and device key"
+                    );
                 }
             }
         }
@@ -256,6 +267,24 @@ impl FprintDevice {
         let guard = self.state.claim.lock().await;
         match guard.as_ref() {
             Some(c) if c.owner_bus_name == sender => Ok(c.username.clone()),
+            Some(_) => Err(FprintError::AlreadyInUse(
+                "Device is claimed by another client".into(),
+            )),
+            None => Err(FprintError::ClaimDevice(
+                "Client must call Claim() before using the device".into(),
+            )),
+        }
+    }
+
+    async fn assert_claimer_idle(&self, sender: &str) -> Result<String, FprintError> {
+        let guard = self.state.claim.lock().await;
+        match guard.as_ref() {
+            Some(c) if c.owner_bus_name == sender && c.op == ActiveOp::None => {
+                Ok(c.username.clone())
+            }
+            Some(c) if c.owner_bus_name == sender => Err(FprintError::AlreadyInUse(
+                "Cannot delete prints while another operation is in progress".into(),
+            )),
             Some(_) => Err(FprintError::AlreadyInUse(
                 "Device is claimed by another client".into(),
             )),
@@ -371,8 +400,12 @@ impl FprintDevice {
         check_polkit(&self.conn, sender, ACTION_VERIFY, false).await?;
         let target_user = resolve_and_authorize_username(&self.conn, sender, username).await?;
 
-        // Sync with hardware if attached; ignore transient open errors when simply listing.
-        let _ = self.state.ensure_device_connected(Some(&self.conn)).await;
+        // Sync with hardware only if no capture is currently holding the device lock,
+        // avoiding a 60s stall if another client is mid-verify/enroll.
+        let device_idle = self.state.device.try_lock().is_ok();
+        if device_idle {
+            let _ = self.state.ensure_device_connected(Some(&self.conn)).await;
+        }
 
         let store = self.state.store.lock().await;
         let fingers = store
@@ -397,6 +430,17 @@ impl FprintDevice {
         check_polkit(&self.conn, sender, ACTION_ENROLL, true).await?;
         let target_user = resolve_and_authorize_username(&self.conn, sender, username).await?;
 
+        {
+            let guard = self.state.claim.lock().await;
+            if let Some(c) = guard.as_ref() {
+                if c.owner_bus_name != sender.as_str() || c.op != ActiveOp::None {
+                    return Err(FprintError::AlreadyInUse(
+                        "Device is currently in use".into(),
+                    ));
+                }
+            }
+        }
+
         let removed = {
             let mut store = self.state.store.lock().await;
             store
@@ -414,7 +458,7 @@ impl FprintDevice {
             .sender()
             .ok_or_else(|| FprintError::PermissionDenied("missing D-Bus sender".into()))?;
         check_polkit(&self.conn, sender, ACTION_ENROLL, true).await?;
-        let username = self.assert_claimer(sender.as_str()).await?;
+        let username = self.assert_claimer_idle(sender.as_str()).await?;
 
         let removed = {
             let mut store = self.state.store.lock().await;
@@ -434,7 +478,7 @@ impl FprintDevice {
             .sender()
             .ok_or_else(|| FprintError::PermissionDenied("missing D-Bus sender".into()))?;
         check_polkit(&self.conn, sender, ACTION_ENROLL, true).await?;
-        let username = self.assert_claimer(sender.as_str()).await?;
+        let username = self.assert_claimer_idle(sender.as_str()).await?;
 
         if finger_name_to_sub_factor(finger_name).is_none() {
             return Err(FprintError::InvalidFingername(format!(
@@ -464,6 +508,7 @@ impl FprintDevice {
         let sender = hdr
             .sender()
             .ok_or_else(|| FprintError::PermissionDenied("missing D-Bus sender".into()))?;
+        check_polkit(&self.conn, sender, ACTION_VERIFY, false).await?;
         let target_user = resolve_and_authorize_username(&self.conn, sender, username).await?;
 
         {
@@ -472,6 +517,11 @@ impl FprintDevice {
                 if existing.owner_bus_name != sender.as_str() {
                     return Err(FprintError::AlreadyInUse(
                         "Device is already claimed by another process".into(),
+                    ));
+                }
+                if existing.username != target_user {
+                    return Err(FprintError::AlreadyInUse(
+                        "Device is already claimed for a different user".into(),
                     ));
                 }
                 return Ok(());
@@ -574,8 +624,14 @@ impl FprintDevice {
 
         {
             let mut guard = self.state.claim.lock().await;
-            let Some(claim) = guard.as_mut() else {
-                return Err(FprintError::ClaimDevice("Device not claimed".into()));
+            let claim = match guard.as_mut() {
+                Some(c) if c.owner_bus_name == sender.as_str() => c,
+                Some(_) => {
+                    return Err(FprintError::AlreadyInUse(
+                        "Device is claimed by another client".into(),
+                    ))
+                }
+                None => return Err(FprintError::ClaimDevice("Device not claimed".into())),
             };
             if claim.op != ActiveOp::None {
                 return Err(FprintError::AlreadyInUse(
@@ -584,17 +640,14 @@ impl FprintDevice {
             }
             claim.op = ActiveOp::Verifying;
             claim.cancel_flag = Some(cancel.clone());
+            let task_cancel = cancel.clone();
+            claim.task = Some(tokio::spawn(async move {
+                run_verify_task(state, conn, username, target_finger, task_cancel).await;
+            }));
         }
 
-        set_finger_needed(&self.state, &self.conn, true).await;
-
-        let task = tokio::spawn(async move {
-            run_verify_task(state, conn, username, target_finger, cancel).await;
-        });
-
-        let mut guard = self.state.claim.lock().await;
-        if let Some(claim) = guard.as_mut() {
-            claim.task = Some(task);
+        if !cancel.load(Ordering::SeqCst) {
+            set_finger_needed(&self.state, &self.conn, true).await;
         }
         Ok(())
     }
@@ -631,8 +684,14 @@ impl FprintDevice {
 
         {
             let mut guard = self.state.claim.lock().await;
-            let Some(claim) = guard.as_mut() else {
-                return Err(FprintError::ClaimDevice("Device not claimed".into()));
+            let claim = match guard.as_mut() {
+                Some(c) if c.owner_bus_name == sender.as_str() => c,
+                Some(_) => {
+                    return Err(FprintError::AlreadyInUse(
+                        "Device is claimed by another client".into(),
+                    ))
+                }
+                None => return Err(FprintError::ClaimDevice("Device not claimed".into())),
             };
             if claim.op != ActiveOp::None {
                 return Err(FprintError::AlreadyInUse(
@@ -641,17 +700,14 @@ impl FprintDevice {
             }
             claim.op = ActiveOp::Enrolling;
             claim.cancel_flag = Some(cancel.clone());
+            let task_cancel = cancel.clone();
+            claim.task = Some(tokio::spawn(async move {
+                run_enroll_task(state, conn, username, finger_owned, sub_factor, task_cancel).await;
+            }));
         }
 
-        set_finger_needed(&self.state, &self.conn, true).await;
-
-        let task = tokio::spawn(async move {
-            run_enroll_task(state, conn, username, finger_owned, sub_factor, cancel).await;
-        });
-
-        let mut guard = self.state.claim.lock().await;
-        if let Some(claim) = guard.as_mut() {
-            claim.task = Some(task);
+        if !cancel.load(Ordering::SeqCst) {
+            set_finger_needed(&self.state, &self.conn, true).await;
         }
         Ok(())
     }
@@ -778,7 +834,9 @@ async fn run_verify_task(
     }
     emit_verify_finger_selected(&conn, &target_finger).await;
 
+    const MAX_VERIFY_BAD_CAPTURES: u32 = 10;
     let outcome = async {
+        let mut bad_captures = 0u32;
         loop {
             let capture_res = {
                 let guard = state.device.lock().await;
@@ -854,10 +912,22 @@ async fn run_verify_task(
                     return ("verify-no-match", true);
                 }
                 Ok(IdentifyOutcome::BadCapture { .. }) => {
+                    bad_captures = bad_captures.saturating_add(1);
+                    if bad_captures >= MAX_VERIFY_BAD_CAPTURES {
+                        warn!(
+                            user = %username,
+                            attempts = bad_captures,
+                            "Exceeded max bad-capture retries during verify"
+                        );
+                        return ("verify-no-match", true);
+                    }
                     emit_verify_status(&conn, "verify-retry-scan", false).await;
                 }
                 Err(ProtoError::Sdcp(e)) => {
-                    error!(error = %e, "SDCP cryptographic verification FAILED during verify!");
+                    error!(error = %e, "SDCP cryptographic verification FAILED during verify; tearing down session!");
+                    // Drop and zeroize the suspect SDCP session so the next operation forces
+                    // full device re-attestation and a fresh ephemeral ECDH handshake.
+                    *state.device.lock().await = None;
                     state.rate_limiter.lock().await.record_failure(&username);
                     return ("verify-unknown-error", true);
                 }
@@ -1022,14 +1092,19 @@ async fn run_enroll_task(
             }
         }
 
-        // Check for duplicate before committing.
+        // Check for duplicate before committing (fail closed on I/O or protocol error).
         {
             let guard = state.device.lock().await;
             let Some(dev) = guard.as_ref() else {
                 return "enroll-disconnected";
             };
-            if let Ok(Some(_)) = dev.check_duplicate().await {
-                return "enroll-duplicate";
+            match dev.check_duplicate().await {
+                Ok(Some(_)) => return "enroll-duplicate",
+                Ok(None) => {}
+                Err(e) => {
+                    error!(error = %e, "CheckDuplicate failed; aborting enrollment");
+                    return "enroll-failed";
+                }
             }
         }
 
@@ -1066,16 +1141,48 @@ async fn run_enroll_task(
             }
         };
 
+        let new_id_hex = hex::encode(enrollment_id);
         let record = EnrollmentRecord {
             username: username.clone(),
             finger_name: finger_name.clone(),
             sub_factor,
             slot_index,
-            enrollment_id_hex: hex::encode(enrollment_id),
+            enrollment_id_hex: new_id_hex.clone(),
         };
-        if let Err(e) = state.store.lock().await.upsert(record) {
-            error!(error = %e, "Failed to persist enrollment binding");
-            return "enroll-unknown-error";
+        let replaced = match state.store.lock().await.upsert(record) {
+            Ok(prev) => prev,
+            Err(e) => {
+                error!(error = %e, "Failed to persist enrollment binding; rolling back on-chip slot");
+                if let Some(idx) = slot_index {
+                    let guard = state.device.lock().await;
+                    if let Some(dev) = guard.as_ref() {
+                        let _ = dev.delete_owned_slot(idx).await;
+                    }
+                }
+                return "enroll-unknown-error";
+            }
+        };
+
+        // Clean up any replaced on-chip template so re-enrollment never orphans slots.
+        if let Some(old_rec) = replaced {
+            if old_rec.enrollment_id_hex != new_id_hex {
+                let guard = state.device.lock().await;
+                if let Some(dev) = guard.as_ref() {
+                    if let Ok(owned) = dev.list_owned_slots().await {
+                        for slot in owned {
+                            if hex::encode(slot.enrollment_id) == old_rec.enrollment_id_hex {
+                                if let Err(e) = dev.delete_owned_slot(slot.slot_index).await {
+                                    warn!(
+                                        slot = slot.slot_index,
+                                        error = %e,
+                                        "Failed to delete replaced on-chip slot"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         info!(user = %username, finger = %finger_name, "Enrollment completed and bound");

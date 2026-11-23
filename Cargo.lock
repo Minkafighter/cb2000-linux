@@ -244,7 +244,7 @@ checksum = "776dfebd015e2d8732c684a2c71003674ccb49457b539b9e82151ba38e96dd7c"
 
 [[package]]
 name = "cb2000-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "cb2000-proto",
@@ -258,7 +258,7 @@ dependencies = [
 
 [[package]]
 name = "cb2000-fprintd"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "cb2000-proto",
@@ -268,6 +268,7 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
+ "subtle",
  "thiserror",
  "tokio",
  "tracing",
@@ -277,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "cb2000-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cb2000-sdcp",
  "der",
@@ -295,7 +296,7 @@ dependencies = [
 
 [[package]]
 name = "cb2000-sdcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "der",
  "hex",
@@ -312,13 +313,16 @@ dependencies = [
 
 [[package]]
 name = "cb2000-tod"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cb2000-proto",
  "cb2000-sdcp",
  "der",
+ "hex",
  "p256",
  "rand_core",
+ "serde",
+ "serde_json",
  "sha2",
  "spki",
  "subtle",

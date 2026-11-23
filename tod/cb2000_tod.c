@@ -100,6 +100,15 @@ cb2000_usb_control_in(
     return (int32_t)actual;
 }
 
+static void
+cb2000_zeroize(void *ptr, size_t len)
+{
+    volatile uint8_t *p = (volatile uint8_t *)ptr;
+    while (len-- > 0) {
+        *p++ = 0;
+    }
+}
+
 static int32_t
 cb2000_usb_bulk_out(void *ctx, const uint8_t *buf, size_t len)
 {
@@ -110,6 +119,7 @@ cb2000_usb_bulk_out(void *ctx, const uint8_t *buf, size_t len)
     uint8_t stack_buf[256];
     uint8_t *tx_buf = stack_buf;
     gsize actual = 0;
+    int32_t rc = 0;
 
     if (len > 0) {
         if (len > sizeof(stack_buf)) {
@@ -131,14 +141,17 @@ cb2000_usb_bulk_out(void *ctx, const uint8_t *buf, size_t len)
         if (err && !g_error_matches(err, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
             fp_warn("GUsb bulk_out(%zu) failed: %s", len, err->message);
         }
-        return -1;
-    }
-    if (actual != len) {
+        rc = -1;
+    } else if (actual != len) {
         fp_warn("GUsb bulk_out short write: expected %zu, wrote %" G_GSIZE_FORMAT,
                 len, actual);
-        return -1;
+        rc = -1;
     }
-    return 0;
+
+    if (len > 0) {
+        cb2000_zeroize(tx_buf, len);
+    }
+    return rc;
 }
 
 static int32_t
@@ -424,6 +437,7 @@ typedef struct {
     uint8_t id[CB2000_ID_LEN];
     uint8_t bad_capture_code;
     Cb2000TodHandle *opened_handle;
+    Cb2000TodHandle *handle_to_close;
     Cb2000TodCaps opened_caps;
     Cb2000TodSlot *listed_slots;
     size_t listed_count;
@@ -435,6 +449,7 @@ cb2000_task_ctx_free(Cb2000TaskCtx *ctx)
     if (!ctx) {
         return;
     }
+    g_clear_pointer(&ctx->handle_to_close, cb2000_tod_close);
     g_clear_pointer(&ctx->listed_slots, g_free);
     g_clear_object(&ctx->device);
     g_free(ctx);
@@ -450,6 +465,7 @@ cb2000_on_task_complete_idle(gpointer user_data)
     if (ctx->thread) {
         g_thread_join(g_steal_pointer(&ctx->thread));
     }
+    g_clear_object(&self->usb_cancellable);
 
     switch (ctx->action) {
     case FPI_DEVICE_ACTION_OPEN:
@@ -635,8 +651,8 @@ cb2000_worker_entry(gpointer user_data)
         break;
 
     case FPI_DEVICE_ACTION_CLOSE:
-        if (self->handle) {
-            cb2000_tod_close(self->handle);
+        if (ctx->handle_to_close) {
+            cb2000_tod_close(g_steal_pointer(&ctx->handle_to_close));
         }
         ctx->rc = CB2000_TOD_OK;
         break;
@@ -740,6 +756,9 @@ fpi_device_cb2000_close(FpDevice *device)
 
     ctx->device = g_object_ref(device);
     ctx->action = FPI_DEVICE_ACTION_CLOSE;
+    /* Transfer ownership on the main thread before spawning close worker so cancel()
+     * can never observe a dangling handle pointer. */
+    ctx->handle_to_close = g_steal_pointer(&self->handle);
     cb2000_spawn_worker(self, ctx);
 }
 
