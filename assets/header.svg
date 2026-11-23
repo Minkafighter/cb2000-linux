@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 400" width="1280" height="400" role="img" aria-label="CB2000-Linux — Clean-Room Rust SDCP Fingerprint Driver">
+  <defs>
+    <!-- Deep obsidian matte wall gradient -->
+    <linearGradient id="wallBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b0807"/>
+      <stop offset="50%" stop-color="#110c09"/>
+      <stop offset="100%" stop-color="#070504"/>
+    </linearGradient>
+
+    <!-- Ambient warm orange wall reflection behind the neon tubes -->
+    <radialGradient id="wallGlowMain" cx="50%" cy="48%" r="48%" fx="50%" fy="48%">
+      <stop offset="0%" stop-color="#ff6a00" stop-opacity="0.28"/>
+      <stop offset="45%" stop-color="#cc4400" stop-opacity="0.11"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="wallGlowIcon" cx="19%" cy="50%" r="22%">
+      <stop offset="0%" stop-color="#ff7300" stop-opacity="0.30"/>
+      <stop offset="60%" stop-color="#aa3300" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Multi-stage realistic neon glass glow filter -->
+    <filter id="neonOuter" x="-30%" y="-40%" width="160%" height="180%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="14" result="blurWide"/>
+      <feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blurMid"/>
+      <feMerge>
+        <feMergeNode in="blurWide"/>
+        <feMergeNode in="blurMid"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="neonSoft" x="-30%" y="-40%" width="160%" height="180%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="7" result="b1"/>
+      <feGaussianBlur in="SourceGraphic" stdDeviation="2.5" result="b2"/>
+      <feMerge>
+        <feMergeNode in="b1"/>
+        <feMergeNode in="b2"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Subtle edge PCB trace gradient -->
+    <linearGradient id="traceFadeL" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ff6a00" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#ff6a00" stop-opacity="0.22"/>
+    </linearGradient>
+    <linearGradient id="traceFadeR" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ff6a00" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#ff6a00" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded card backdrop -->
+  <rect x="0" y="0" width="1280" height="400" rx="22" fill="url(#wallBg)"/>
+  <rect x="0" y="0" width="1280" height="400" rx="22" fill="url(#wallGlowMain)"/>
+  <rect x="0" y="0" width="1280" height="400" rx="22" fill="url(#wallGlowIcon)"/>
+
+  <!-- Subtle matte border -->
+  <rect x="1.5" y="1.5" width="1277" height="397" rx="21" fill="none" stroke="#ff7a1a" stroke-opacity="0.16" stroke-width="1.5"/>
+
+  <!-- Subtle dark mounting wires / standoffs behind neon tubes -->
+  <g stroke="#1c1410" stroke-width="3.5" fill="none" stroke-linecap="round">
+    <path d="M 242 0 L 242 112"/>
+    <path d="M 242 288 L 242 400"/>
+    <path d="M 1062 258 L 1062 400"/>
+    <path d="M 322 210 Q 348 224 378 210"/>
+  </g>
+
+  <!-- Faint decorative circuit traces fading toward edges -->
+  <g fill="none" stroke-width="1.5" stroke-linecap="round">
+    <path d="M 26 140 H 96 L 120 164 H 158" stroke="url(#traceFadeL)"/>
+    <path d="M 38 200 H 142" stroke="url(#traceFadeL)"/>
+    <path d="M 26 260 H 96 L 120 234 H 158" stroke="url(#traceFadeL)"/>
+    <path d="M 1122 155 H 1164 L 1190 130 H 1254" stroke="url(#traceFadeR)"/>
+    <path d="M 1138 205 H 1244" stroke="url(#traceFadeR)"/>
+    <path d="M 1122 255 H 1166 L 1190 280 H 1254" stroke="url(#traceFadeR)"/>
+  </g>
+
+  <!-- Original Neon Fingerprint Icon (clean non-intersecting concentric ridges) -->
+  <g transform="translate(242, 200)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Outer orange glow pass -->
+    <g stroke="#ff5e00" stroke-width="10.5" opacity="0.65" filter="url(#neonOuter)">
+      <path d="M -56 -14 A 56 58 0 0 1 56 -14"/>
+      <path d="M -58 6 C -58 34 -48 56 -32 70"/>
+      <path d="M 58 6 C 58 34 48 56 32 70"/>
+      <path d="M -39 -12 A 39 41 0 0 1 39 -12 C 39 18 32 42 16 62"/>
+      <path d="M -39 8 C -39 30 -30 48 -16 62"/>
+      <path d="M -21 -10 A 21 23 0 0 1 21 -10 C 21 16 14 36 0 54"/>
+      <path d="M -21 8 C -21 24 -16 38 -8 48"/>
+      <path d="M -4 -6 C -4 14 -1 28 6 38"/>
+    </g>
+    <!-- Mid bright orange tube -->
+    <g stroke="#ff9433" stroke-width="6">
+      <path d="M -56 -14 A 56 58 0 0 1 56 -14"/>
+      <path d="M -58 6 C -58 34 -48 56 -32 70"/>
+      <path d="M 58 6 C 58 34 48 56 32 70"/>
+      <path d="M -39 -12 A 39 41 0 0 1 39 -12 C 39 18 32 42 16 62"/>
+      <path d="M -39 8 C -39 30 -30 48 -16 62"/>
+      <path d="M -21 -10 A 21 23 0 0 1 21 -10 C 21 16 14 36 0 54"/>
+      <path d="M -21 8 C -21 24 -16 38 -8 48"/>
+      <path d="M -4 -6 C -4 14 -1 28 6 38"/>
+    </g>
+    <!-- Hot white-amber inner filament -->
+    <g stroke="#fff3e0" stroke-width="2.2">
+      <path d="M -56 -14 A 56 58 0 0 1 56 -14"/>
+      <path d="M -58 6 C -58 34 -48 56 -32 70"/>
+      <path d="M 58 6 C 58 34 48 56 32 70"/>
+      <path d="M -39 -12 A 39 41 0 0 1 39 -12 C 39 18 32 42 16 62"/>
+      <path d="M -39 8 C -39 30 -30 48 -16 62"/>
+      <path d="M -21 -10 A 21 23 0 0 1 21 -10 C 21 16 14 36 0 54"/>
+      <path d="M -21 8 C -21 24 -16 38 -8 48"/>
+      <path d="M -4 -6 C -4 14 -1 28 6 38"/>
+    </g>
+  </g>
+
+  <!-- Main Neon Typography: CB2000-Linux -->
+  <g font-family="Inter, 'Segoe UI', 'Liberation Sans', 'DejaVu Sans', sans-serif" font-weight="600" font-size="108" letter-spacing="2">
+    <!-- Wide warm orange glow -->
+    <text x="360" y="218" fill="none" stroke="#ff5500" stroke-width="11" stroke-linejoin="round" opacity="0.72" filter="url(#neonOuter)">CB2000-Linux</text>
+    <!-- Vivid orange glass tube -->
+    <text x="360" y="218" fill="none" stroke="#ff9933" stroke-width="5.5" stroke-linejoin="round">CB2000-Linux</text>
+    <!-- Hot white-orange core -->
+    <text x="360" y="218" fill="none" stroke="#fff4e6" stroke-width="2.1" stroke-linejoin="round">CB2000-Linux</text>
+  </g>
+
+  <!-- Subtitle Neon Line -->
+  <g font-family="Inter, 'Segoe UI', 'Liberation Sans', 'DejaVu Sans', sans-serif" font-weight="500" font-size="25" letter-spacing="6.5">
+    <text x="365" y="274" fill="#ff6a00" opacity="0.65" filter="url(#neonSoft)">CLEAN-ROOM RUST  •  SDCP  •  MATCH-ON-CHIP</text>
+    <text x="365" y="274" fill="#ffbd7a">CLEAN-ROOM RUST  •  SDCP  •  MATCH-ON-CHIP</text>
+  </g>
+</svg>
