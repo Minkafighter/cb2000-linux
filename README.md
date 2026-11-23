@@ -15,7 +15,7 @@ A **100% clean-room, memory-safe Rust** Linux fingerprint driver for the **Canva
 > 1. **Install `fprintd`**: `sudo pacman -S fprintd` (CachyOS / Arch) or `sudo apt install fprintd libpam-fprintd` (Ubuntu / Debian).
 > 2. **Download & install the prebuilt binaries**: Grab the latest `cb2000-linux-v*-x86_64.tar.gz` from [GitHub Releases](https://github.com/Minkafighter/cb2000-linux/releases/latest), extract it, and run `sudo ./packaging/install.sh` inside the extracted folder.
 > 3. **Enroll your fingerprints**: Add them directly in **KDE Plasma** (*System Settings → Users*), **GNOME** (*Settings → Users*), or from a terminal with `fprintd-enroll`. On **KDE Plasma (Arch/CachyOS)**, lockscreen unlock works right away with **no PAM edits needed**.
-> 4. **Optional — Enable for `sudo` / Polkit**: Add `auth sufficient pam_fprintd.so` near the top of `/etc/pam.d/sudo` and `/etc/pam.d/polkit-1` on Arch/CachyOS (avoid editing `/etc/pam.d/system-auth`, which slows down SDDM boot login), or run `sudo pam-auth-update` on Ubuntu.
+> 4. **Optional — Enable for `sudo` / Polkit**: Add `auth sufficient pam_fprintd.so` near the top of `/etc/pam.d/sudo` and `/etc/pam.d/polkit-1` on Arch/CachyOS (avoid editing `/etc/pam.d/system-auth`, which slows down SDDM / Plasma Login Manager (`plasmalogin`) boot login), or run `sudo pam-auth-update` on Ubuntu.
 >
 > See [**Option B**](#option-b-install-standalone-cb2000-fprintd-daemon-tested-on-cachyos--pure-rust-no-libfprint-tod-needed) and [**Enable PAM Authentication & Enroll**](#enable-pam-authentication--enroll-both-options) below for full details.
 
@@ -46,7 +46,7 @@ Both modes integrate seamlessly with:
 | Aspect | Native `libfprint` TOD Plugin (`tod/`) | Standalone `cb2000-fprintd` |
 |--------|----------------------------------------|-----------------------------|
 | Upstream `fprintd` / `libfprint` | Runs directly inside stock `fprintd` via `libfprint-2-tod-1` | Replaces `fprintd.service` on `net.reactivated.Fprint` |
-| SDCP Crypto & Attestation | Full Rust verification (`model_cert` + `s_m` + `s_d` + constant-time MACs) | Full Rust verification + persistent TOFU Model Cert SHA-256 pinning |
+| SDCP Crypto & Attestation | Full Rust verification (`model_cert` + `s_m` + `s_d` + constant-time MACs) + persistent TOFU pinning of Model Cert SHA-256 & per-device `pk_d` SHA-256 (plus optional fail-closed trusted CA verification) | Full Rust verification (`model_cert` + `s_m` + `s_d` + constant-time MACs) + persistent TOFU pinning of Model Cert SHA-256 & per-device `pk_d` SHA-256 (plus optional fail-closed trusted CA verification) |
 | Memory Safety | SDCP & USB parser in Rust; minimal C GObject wrapper (`GUsbDevice`) | 100% `#![forbid(unsafe_code)]` Rust end-to-end |
 | Per-user Template Isolation | Enforced by stock `fprintd` gallery + `FPI_PRINT_RAW` ID matching | Enforced by root-owned `enrollments.json` + rate limiter |
 | Distro Requirement | Needs `libfprint-2-tod1` (Ubuntu stock) or `libfprint-tod` (Arch AUR) | Works with stock `libfprint` (`fprintd` only needed for `pam_fprintd.so`) |
@@ -55,7 +55,7 @@ Both modes integrate seamlessly with:
 
 1. **Mandatory SDCP Cryptography (No Plaintext Fallback)**:
    - Ephemeral NIST P-256 ECDH key agreement with OS CSPRNG (`getrandom` / `OsRng`).
-   - Full ECDSA P-256 device attestation verification of the Claim chain (`model_cert -> pk_d -> ([0xC0, 0x01] \|\| h_f \|\| pk_f)`). *(Unlike draft C patches that omit Claim signature validation, every `open()` verifies `s_m`, `s_d`, and X.509 cert validity.)*
+   - Full ECDSA P-256 device attestation verification of the Claim chain (`model_cert -> pk_d -> ([0xC0, 0x01] \|\| h_f \|\| pk_f)`). *(Unlike draft C patches that omit Claim signature validation, every `open()` verifies X.509 DER structure, P-256 SPKI OIDs (`id-ecPublicKey` / `secp256r1`), `s_m`, `s_d`, and TOFU-pinned Model Cert + per-device `pk_d` SHA-256 fingerprints, plus optional fail-closed issuing CA verification via `--trusted-ca-dir` or `CB2000_TOD_TRUSTED_CA_DIR`.)*
    - Fresh 32-byte CSPRNG challenge nonce on every authentication and **constant-time HMAC-SHA256 verification** (`subtle::ConstantTimeEq`) of every `AuthorizedIdentity` response.
    - Automatic memory wiping (`zeroize::ZeroizeOnDrop`) of all session keys and secrets.
 2. **Dual-Boot Partition Isolation**:
@@ -77,6 +77,9 @@ cargo build --release --workspace
 
 ## Quick Hardware Test
 
+> [!NOTE]
+> If `cb2000-fprintd.service` (or `fprintd.service`) is already running, stop it first (`sudo systemctl stop cb2000-fprintd`) before running `cb2000-cli` so the USB interface isn't busy.
+
 ```bash
 sudo ./target/release/cb2000-cli probe
 sudo ./target/release/cb2000-cli slots
@@ -91,7 +94,7 @@ sudo ./target/release/cb2000-cli delete-all
 
 ### 1. Install `libfprint-2-tod-1` Development Headers & `fprintd`
 
-- **Ubuntu (22.04 / 24.04+)**:
+- **Ubuntu (24.04 / 26.04+)**:
   ```bash
   sudo apt update
   sudo apt install libfprint-2-tod1 libfprint-2-tod-dev fprintd libpam-fprintd build-essential pkg-config
@@ -153,12 +156,13 @@ sudo ./packaging/install.sh
 ## Enable PAM Authentication & Enroll (Both Options)
 
 - **CachyOS / Arch Linux (KDE Plasma / GNOME / `sudo`)**:
-  - **KDE Plasma lockscreen**: Works out of the box once `fprintd` is installed and a fingerprint is enrolled (via `/etc/pam.d/kde-fingerprint`) — **no PAM edits required**. Initial boot login at SDDM stays password-only so login remains instant and KWallet unlocks cleanly.
+  - **KDE Plasma lockscreen**: Works out of the box once `fprintd` is installed and a fingerprint is enrolled (via `/usr/lib/pam.d/kde-fingerprint`) — **no PAM edits required**. Initial boot login at SDDM / Plasma Login Manager (`plasmalogin`) stays password-only so login remains instant and KWallet unlocks cleanly.
   - **Optional (`sudo` and Polkit)**: Add `auth sufficient pam_fprintd.so` near the top of:
     - `/etc/pam.d/sudo`
     - `/etc/pam.d/polkit-1`
-  - > [!NOTE]
-    > Avoid adding `pam_fprintd.so` to `/etc/pam.d/system-auth` — SDDM includes `system-auth` and will pause waiting for a fingerprint timeout after you enter your password on boot.
+
+> [!NOTE]
+> Avoid adding `pam_fprintd.so` to `/etc/pam.d/system-auth` — SDDM / Plasma Login Manager (`plasmalogin`) includes `system-auth` and will pause waiting for a fingerprint timeout after you enter your password on boot.
 
 - **Ubuntu (GNOME / KDE / `sudo`)**:
   ```bash
